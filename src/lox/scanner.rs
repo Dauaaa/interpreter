@@ -13,13 +13,6 @@ struct EnumeratedString {
     pub offset: usize,
 }
 
-/// State for the scanner. This is used to help identify any bad character.
-/// `Next` is the starting state, it may take any character
-/// `MaybeTwo` represents we've gotten !, =, > or <.
-/// This means it will become a token after the next character is read.
-/// `LiteralOrKeyword` represents we've started a possible literal or keyword.
-/// This means it will concatenate all characters until we get (, ), {, }, Comma, ., -, +, ;, /, *, !, =, >, < or "end of word".
-//
 // digraph {
 //     IdentifierOrKeyword -> Next [ label="new" ]
 //     IdentifierOrKeyword -> IdentifierOrKeyword [ label="buf" ]
@@ -32,9 +25,10 @@ struct EnumeratedString {
 //     Next -> SoloDot [ label="buf" ]
 //     MaybeTwo -> Next [ label="new" ]
 //     MaybeTwo -> Comment [ label="nothing" ]
+//     MaybeTwo -> BlockComment [ label="nothing"]
 //     InString -> Next [ label="new" ]
 //     Number -> Next [ label="new" ]
-// 	Number -> Number [ label="buf" ]
+//     Number -> Number [ label="buf" ]
 //     Number -> NumberWithDot [ label="buf" ]
 //     NumberWithDot -> NumberWithDot [ label="buf" ]
 //     NumberWithDot -> Next [ label="new" ]
@@ -43,60 +37,97 @@ struct EnumeratedString {
 //     Comment -> Next [ label="nothing" ]
 //     IdentifierOrKeyword -> SoloDot [ label="new/buf" ]
 //     IdentifierOrKeyword -> MaybeTwo [ label="new/buf" ]
+//     BlockComment -> BlockCommentMaybeAdd [ label="nothing" ]
+//     BlockComment -> BlockCommentMaybeSubtract [ label="nothing" ]
+//     BlockComment -> BlockComment [ label="nothing" ]
+//     BlockCommentMaybeAdd -> BlockCommentMaybeAdd [ label="nothing" ]
+//     BlockCommentMaybeAdd -> BlockComment [ label="nothing" ]
+//     BlockCommentMaybeSubtract -> BlockCommentMaybeSubtract [ label="nothing" ]
+//     BlockCommentMaybeSubtract -> BlockComment [ label="nothing" ]
+//     BlockCommentMaybeSubtract -> Next [ label="nothing" ]
 // }
-//                                   buf
-//                ┌────────────────────────────────────────────────────┐
-//                ▼                                                    │
-//              ┌───────────────┐                                      │
-// ┌─────────── │    SoloDot    │ ─────────────────────────┐           │
-// │            └───────────────┘                          │           │
-// │              ▲                                        │           │
-// │              │ new/buf                                │           │
-// │              │                                        │           │
-// │      buf   ┌───────────────────────────────┐          │           │
-// │    ┌────── │                               │          │           │
-// │    │       │      IdentifierOrKeyword      │          │           │
-// │    └─────▶ │                               │ ◀┐       │           │
-// │            └───────────────────────────────┘  │       │           │
-// │              │                │               │       │           │
-// │              │ new/buf        │               │       │           │
-// │              ▼                │               │       │           │
-// │            ┌───────────────┐  │               │       │           │
-// │    ┌────── │   MaybeTwo    │ ◀┼───────┐       │       │           │
-// │    │       └───────────────┘  │       │       │       │           │
-// │    │         │                │       │       │ buf   │           │
-// │    │         │ nothing        │       │       │       │           │
-// │    │         ▼                │       │       │       │           │
-// │    │       ┌───────────────┐  │       │ buf   │       │           │
-// │    │ new   │    Comment    │  │       │       │       │           │
-// │    │       └───────────────┘  │       │       │       │           │
-// │    │         │                │       │       │       │           │
-// │    │         │ nothing        │ new   │       │       │ new       │
-// │    │         ▼                ▼       │       │       ▼           │
-// │    │       ┌─────────────────────────────────────────────────────────────┐   new
-// │    │       │                                                             │ ──────┐
-// │    │       │                            Next                             │       │
-// │    └─────▶ │                                                             │ ◀─────┘
-// │            └─────────────────────────────────────────────────────────────┘
-// │              │                ▲       ▲       ▲       │
-// │              │ buf            │ new   │ new   │ new   │ buf
-// │              ▼                │       │       │       ▼
-// │      buf   ┌───────────────┐  │       │       │     ┌──────────┐   buf
-// │    ┌────── │               │  │       │       │     │          │ ──────┐
-// │    │       │    Number     │  │       │       │     │ InString │       │
-// │    └─────▶ │               │ ─┘       │       └──── │          │ ◀─────┘
-// │            └───────────────┘          │             └──────────┘
-// │              │                        │
-// │              │ buf                    │
-// │              ▼                        │
-// │      buf   ┌───────────────┐          │
-// │    ┌────── │               │          │
-// │    │       │ NumberWithDot │          │
-// │    └─────▶ │               │ ─────────┘
-// │            └───────────────┘
-// │   buf        ▲
-// └──────────────┘
+//                                                      buf
+//                                               ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+//                                               │                                                                                                               │
+//                                               │                                                                                                               │
+//      ┌────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┐                                  │
+//      │                                        ▼                                                                            │                                  │
+//      │                                      ┌───────────────────────────┐                                                  │                                  │
+//      │                       ┌───────────── │          SoloDot          │ ─────────────────────────────────────────────────┼─────────────────────────────┐    │
+//      │                       │              └───────────────────────────┘                                                  │                             │    │
+//      │                       │                ▲                                                 buf                        │                             │    │
+//      │                       │                │ new/buf                                  ┌─────────────────────────────────┼─────────┐                   │    │
+//      │                       │                │                                          ▼                                 │         │                   │    │
+//      │                       │      buf     ┌─────────────────────────────────────────────────┐                            │         │                   │    │
+//      │                       │    ┌──────── │                                                 │                            │         │                   │    │
+//      │                       │    │         │               IdentifierOrKeyword               │                            │         │                   │    │
+//      │                       │    └───────▶ │                                                 │ ───────────────┐           │         │                   │    │
+//      │                       │              └─────────────────────────────────────────────────┘                │           │         │                   │    │
+//      │                       │                │                                                                │           │         │                   │    │
+//      │ nothing               │                │ new/buf                                  ┌─────────────────────┼───────────┘         │                   │    │
+//      ▼                       │                ▼                                          │                     │                     │                   │    │
+//      ┌──────────┐            │              ┌─────────────────────────────────────────────────┐  buf           │                     │                   │    │
+//      │ Comment  │            │    ┌──────── │                    MaybeTwo                     │ ◀──────────────┼───────────┐         │                   │    │
+//      └──────────┘            │    │         └─────────────────────────────────────────────────┘                │           │         │                   │    │
+//      │                       │    │           │                                                                │           │         │                   │    │
+//      │                       │    │           │ nothing                                                        │           │         │                   │    │
+//      │                       │    │           ▼                                                                │           │         │                   │    │
+//      │                       │    │         ┌─────────────────────────────────────────────────┐   nothing      │           │         │                   │    │
+//      │                       │    │         │                                                 │ ──────────┐    │           │         │                   │    │
+//      │          nothing      │    │         │                  BlockComment                   │           │    │           │         │                   │    │
+// ┌────┼───────────────────────┼────┼───────▶ │                                                 │ ◀─────────┘    │           │         │                   │    │
+// │    │                       │    │         └─────────────────────────────────────────────────┘                │           │         │                   │    │
+// │    │                       │    │           │                            ▲             │                     │           │         │                   │    │
+// │    │                       │    │           │ nothing                    │ nothing     │                     │           │         │                   │    │
+// │    │                       │    │           ▼                            │             │                     │           │         │                   │    │
+// │    │                       │    │         ┌───────────────────────────┐  │             │                     │           │         │                   │    │
+// │    │                       │    │         │ BlockCommentMaybeSubtract │ ─┘             └─────────────────────┼───────────┼─────────┼──────────────┐    │    │
+// │    │                       │    │         └───────────────────────────┘                                      │           │         │              │    │    │
+// │    │                       │    │           │                                                                │           │         │              │    │    │
+// │    │                       │    │ new       │ nothing                                                        │ new       │         │              │    │    │
+// │    │                       │    │           ▼                                                                ▼           │         │              │    │    │
+// │    │                       │    │         ┌──────────────────────────────────────────────────────────────────────────────────────────┐   new      │    │    │
+// │    │                       │    │         │                                                                                          │ ──────┐    │    │    │
+// │    │                       │    │         │                                                                                          │       │    │    │    │
+// │    │                       │    └───────▶ │                                                                                          │ ◀─────┘    │    │    │
+// │    │                       │              │                                                                                          │            │    │    │
+// │    │                       │   nothing    │                                           Next                                           │  new       │    │    │
+// │    └───────────────────────┼────────────▶ │                                                                                          │ ◀──────────┼────┘    │
+// │                            │              │                                                                                          │            │         │
+// │                            │              │                                                                                          │            │         │
+// │                            │              │                                                                                          │ ───────────┼─────────┘
+// │                            │              └──────────────────────────────────────────────────────────────────────────────────────────┘            │
+// │                            │                │                            ▲             ▲       ▲             │                                    │
+// │                            │                │ buf                        │ new         │ new   │ new         │ buf                                │
+// │                            │                ▼                            │             │       │             ▼                                    │
+// │                            │      buf     ┌───────────────────────────┐  │             │       │           ┌──────────┐   buf                     │
+// │                            │    ┌──────── │                           │  │             │       │           │          │ ──────┐                   │
+// │                            │    │         │          Number           │  │             │       │           │ InString │       │                   │
+// │                            │    └───────▶ │                           │ ─┘             │       └────────── │          │ ◀─────┘                   │
+// │                            │              └───────────────────────────┘                │                   └──────────┘                           │
+// │                            │                │                                          │                                                          │
+// │                            │                │ buf                                      │                                                          │
+// │                            │                ▼                                          │                                                          │
+// │                            │      buf     ┌───────────────────────────┐                │                                                          │
+// │                            │    ┌──────── │                           │                │                                                          │
+// │                            │    │         │       NumberWithDot       │                │                                                          │
+// │                            │    └───────▶ │                           │ ───────────────┘                                                          │
+// │                            │              └───────────────────────────┘                                                                           │
+// │                            │   buf          ▲                                                                                                     │
+// │                            └────────────────┘                                                                                                     │
+// │                                                                                                                                                   │
+// │                                                                         nothing                                                                   │
+// │                                             ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+// │                                             ▼
+// │                                           ┌───────────────────────────┐   nothing
+// │                                           │                           │ ──────────┐
+// │                                           │   BlockCommentMaybeAdd    │           │
+// └────────────────────────────────────────── │                           │ ◀─────────┘
+//                                             └───────────────────────────┘
 enum ScannerState {
+    BlockComment(u8),
+    BlockCommentMaybeAdd(u8),
+    BlockCommentMaybeSubtract(u8),
     Comment,
     Next,
     MaybeTwo,
@@ -165,6 +196,48 @@ impl Scanner {
         // and too many custom functions needed.
         for (i, c) in self.source.chars().enumerate() {
             match state {
+                ScannerState::BlockComment(nesting) => {
+                    if c == '\n' {
+                        line_count += 1;
+                        since_last_line = i + 1;
+                    } else if c == '*' {
+                        state = ScannerState::BlockCommentMaybeSubtract(nesting);
+                    } else if c == '/' {
+                        state = ScannerState::BlockCommentMaybeAdd(nesting);
+                    }
+                }
+                ScannerState::BlockCommentMaybeSubtract(nesting) => {
+                    if c == '*' {
+                        continue;
+                    }
+                    if c == '/' {
+                        if nesting == 1 {
+                            state = ScannerState::Next;
+                        } else {
+                            state = ScannerState::BlockComment(nesting - 1);
+                        }
+                    } else if c == '\n' {
+                        line_count += 1;
+                        since_last_line = i + 1;
+                        state = ScannerState::BlockComment(nesting);
+                    } else {
+                        state = ScannerState::BlockComment(nesting);
+                    }
+                }
+                ScannerState::BlockCommentMaybeAdd(nesting) => {
+                    if c == '/' {
+                        continue;
+                    }
+                    if c == '*' {
+                        state = ScannerState::BlockComment(nesting + 1);
+                    } else if c == '\n' {
+                        line_count += 1;
+                        since_last_line = i + 1;
+                        state = ScannerState::BlockComment(nesting);
+                    } else {
+                        state = ScannerState::BlockComment(nesting);
+                    }
+                }
                 ScannerState::Comment => {
                     if c == '\n' {
                         line_count += 1;
@@ -297,6 +370,10 @@ impl Scanner {
                 }
                 ScannerState::MaybeTwo => {
                     if let Some(tt) = single_char.get(&c) {
+                        if c == '*' && buffer_type == TokenType::Slash {
+                            state = ScannerState::BlockComment(1);
+                            continue;
+                        }
                         self.tokens.push(Token::new(buffer_type, None, line_count, i - since_last_line - 1));
                         self.tokens.push(Token::new(tt.clone(), None, line_count, i - since_last_line));
                         state = ScannerState::Next;
@@ -315,7 +392,8 @@ impl Scanner {
                             self.tokens.push(Token::new(tt, None, line_count, i - since_last_line));
                         } else if c == '/' && buffer_type == TokenType::Slash {
                             state = ScannerState::Comment;
-                        } else {
+                        }
+                        else {
                             self.tokens.push(Token::new(buffer_type, None, line_count, i - since_last_line - 1));
                             buffer_type = tt.clone();
                         }
