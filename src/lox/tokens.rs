@@ -17,7 +17,7 @@ impl Token {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenType {
     // Single-character tokens.
     LeftParen,
@@ -29,7 +29,6 @@ pub enum TokenType {
     Minus,
     Plus,
     Semicolon,
-    Slash,
     Star,
 
     // One or two character tokens.
@@ -41,6 +40,8 @@ pub enum TokenType {
     GreaterEqual,
     Less,
     LessEqual,
+    Slash,
+    // SlashSlash (no need though since we ignore comments [for now?])
 
     // Literals.
     Identifier,

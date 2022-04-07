@@ -19,7 +19,6 @@ struct EnumeratedString {
 /// This means it will become a token after the next character is read.
 /// `LiteralOrKeyword` represents we've started a possible literal or keyword.
 /// This means it will concatenate all characters until we get (, ), {, }, Comma, ., -, +, ;, /, *, !, =, >, < or "end of word".
-/// # sample 0
 //
 // digraph {
 //     LiteralKeyword -> Next [ label="new" ]
@@ -32,6 +31,7 @@ struct EnumeratedString {
 //     Next -> Number [ label="buf" ]
 //     Next -> SoloDot [ label="buf" ]
 //     MaybeTwo -> Next [ label="new" ]
+//     MaybeTwo -> Comment [ label="nothing" ]
 //     InString -> Next [ label="new" ]
 //     Number -> Next [ label="new" ]
 // 	Number -> Number [ label="buf" ]
@@ -40,52 +40,61 @@ struct EnumeratedString {
 //     NumberWithDot -> Next [ label="new" ]
 //     SoloDot -> NumberWithDot [ label="buf" ]
 //     SoloDot -> Next [ label="new" ]
+//     Comment -> Next [ label="nothing" ]
 // }
-//
-//                      buf   +----------------+
-//                    +------ |                |
-//                    |       | LiteralKeyword |
-//                    +-----> |                | <+
-//                            +----------------+  |
-//                              |                 |
-//                              | new             | buf
-//                              v                 |
-//      +----------+          +----------------------------------------------------+   new
-//      |          |          |                                                    | ------+
-//      | MaybeTwo |  buf     |                                                    |       |
-//      |          | <------- |                                                    | <-----+
-//      +----------+          |                                                    |
-//        |          new      |                                                    |
-//        +-----------------> |                                                    |
-//                            |                                                    |
-//      +----------+  buf     |                        Next                        |
-//   +- | SoloDot  | <------- |                                                    |
-//   |  +----------+          |                                                    |
-//   |    |                   |                                                    |
-//   |    |                   |                                                    |
-//   |    |                   |                                                    |
-//   |    |          new      |                                                    |
-//   +----+-----------------> |                                                    |
-//        |                   +----------------------------------------------------+
-//        |                     |                 ^       ^       ^       |
-//        |                     | buf             | new   | new   | new   | buf
-//        |                     v                 |       |       |       v
-//        |             buf   +----------------+  |       |       |     +----------+   buf
-//        |           +------ |                |  |       |       |     |          | ------+
-//        |           |       |     Number     |  |       |       |     | InString |       |
-//        |           +-----> |                | -+       |       +---- |          | <-----+
-//        |                   +----------------+          |             +----------+
-//        |                     |                         |
-//        |                     | buf                     |
-//        |                     v                         |
-//        |             buf   +----------------+          |
-//        |           +------ |                |          |
-//        |           |       | NumberWithDot  |          |
-//        |           +-----> |                | ---------+
-//        |                   +----------------+
-//        |          buf        ^
-//        +---------------------+
+// +----------------------------------------------------------------------------------+
+// |                                                                                  |
+// |                                                                                  |
+// |    +---------------------------------------------------------------------+       |
+// |    |                                                                     |       |
+// |    |                                                                     |       |
+// |    |    +----------------------------------------------------+           |       |
+// |    |    |                                                    |           |       |
+// |    |    |                  buf   +----------------+          |           |       |
+// |    |    |                +------ |                |          |           |       |
+// |    |    |                |       | LiteralKeyword |          |           |       |
+// |    |    |                +-----> |                | <+       |           |       |
+// |    |    |                        +----------------+  |       |           |       |
+// |    |    |                          |                 |       |           |       |
+// |    |    | buf                      | new             | buf   |           | new   | new
+// |    |    v                          v                 |       |           v       v
+// |    |  +---------------+   buf    +-----------------------------------------------------------------------+   new
+// |    |  |               | ------+  |                                                                       | ------+
+// |    |  |    Number     |       |  |                                                                       |       |
+// |    +- |               | <-----+  |                                                                       | <-----+
+// |       +---------------+          |                                                                       |
+// |         |                        |                                                                       |
+// |         | buf                    |                                                                       |
+// |         v                        |                                                                       |
+// |       +---------------+   buf    |                                                                       |
+// |       |               | ------+  |                                 Next                                  |
+// |       | NumberWithDot |       |  |                                                                       |
+// +------ |               | <-----+  |                                                                       |
+//         +---------------+          |                                                                       |
+//           ^                        |                                                                       |
+//           | buf                    |                                                                       |
+//           |                        |                                                                       |
+//         +---------------+  new     |                                                                       |
+//         |    SoloDot    | -------> |                                                                       |
+//         +---------------+          +-----------------------------------------------------------------------+
+//           ^                          |                 ^       ^           ^       |                     |
+//           | buf                      | buf             | new   | nothing   | new   | buf                 |
+//           |                          v                 |       |           |       v                     |
+//           |                        +----------------+  |       |           |     +----------+   buf      |
+//           |                        |                |  |       |           |     |          | ------+    |
+//           |                        |    MaybeTwo    |  |       |           |     | InString |       |    |
+//           |                        |                | -+       |           +---- |          | <-----+    |
+//           |                        +----------------+          |                 +----------+            |
+//           |                          |                         |                                         |
+//           |                          | nothing                 |                                         |
+//           |                          v                         |                                         |
+//           |                        +----------------+          |                                         |
+//           |                        |    Comment     | ---------+                                         |
+//           |                        +----------------+                                                    |
+//           |                                                                                              |
+//           +----------------------------------------------------------------------------------------------+
 enum ScannerState {
+    Comment,
     Next,
     MaybeTwo,
     IdentifierOrKeyword,
@@ -113,7 +122,6 @@ impl Scanner {
             ('-', TokenType::Minus),
             ('+', TokenType::Plus),
             (';', TokenType::Semicolon),
-            ('/', TokenType::Slash),
             ('*', TokenType::Star),
         ]);
 
@@ -122,6 +130,7 @@ impl Scanner {
             ('=', TokenType::Equal),
             ('>', TokenType::Greater),
             ('<', TokenType::Less),
+            ('/', TokenType::Slash),
         ]);
 
         let keywords: HashMap<String, TokenType> = HashMap::from([
@@ -153,6 +162,13 @@ impl Scanner {
         // and too many custom functions needed.
         for (i, c) in self.source.chars().enumerate() {
             match state {
+                ScannerState::Comment => {
+                    if c == '\n' {
+                        line_count += 1;
+                        since_last_line = i + 1;
+                        state = ScannerState::Next;
+                    }
+                }
                 ScannerState::SoloDot => {
                     if c.is_numeric() {
                         buffer_vec.clear();
@@ -282,7 +298,7 @@ impl Scanner {
                         self.tokens.push(Token::new(tt.clone(), None, line_count, i - since_last_line));
                         state = ScannerState::Next;
                     } else if let Some(tt) = first_two_char.get(&c) {
-                        if c == '=' {
+                        if c == '=' && buffer_type != TokenType::Slash {
                             let tt = match buffer_type {
                                 TokenType::Bang => TokenType::BangEqual,
                                 TokenType::Equal => TokenType::EqualEqual,
@@ -294,6 +310,8 @@ impl Scanner {
                                 }
                             };
                             self.tokens.push(Token::new(tt, None, line_count, i - since_last_line));
+                        } else if c == '/' && buffer_type == TokenType::Slash {
+                            state = ScannerState::Comment;
                         } else {
                             self.tokens.push(Token::new(buffer_type, None, line_count, i - since_last_line - 1));
                             buffer_type = tt.clone();
@@ -373,5 +391,6 @@ impl Scanner {
         let eof_token = Token::new(TokenType::Eof, None, line_count, 0);
 
         self.tokens.push(eof_token);
+        println!("{:#?}", self.tokens);
     }
 }
