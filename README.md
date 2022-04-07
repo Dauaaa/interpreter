@@ -9,4 +9,4 @@ Edge colors
 - Blue: new token added
 - Red: mutate buffer (push into `buffer_vec` or change `buffer_type`)
 - Grey: comment
-![Alt text](https://i.postimg.cc/d0WkYRfV/graphviz.png)
+![Alt text](https://i.postimg.cc/C1Bjr6Kg/graphviz.png)
